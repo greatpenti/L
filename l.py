@@ -1,89 +1,114 @@
 import streamlit as st
 import google.generativeai as genai
 from pptx import Presentation
+from pptx.util import Inches, Pt
+from pptx.enum.text import PP_ALIGN
+import PyPDF2
+import io
 
-def pdf_to_text(uploaded_file):
+# Gemini API 키 설정
+genai.configure(api_key='your_api_key')
+
+# Gemini 모델 설정
+model = genai.GenerativeModel('gemini-pro')
+
+def create_presentation(title, content):
     try:
-        import PyPDF2
+        # 프레젠테이션 생성
+        prs = Presentation()
         
-        # PDF 파일 읽기
-        pdf_reader = PyPDF2.PdfReader(uploaded_file)
+        # 제목 슬라이드
+        title_slide_layout = prs.slide_layouts[0]
+        slide = prs.slides.add_slide(title_slide_layout)
+        title_shape = slide.shapes.title
+        title_shape.text = title
         
-        # 모든 페이지의 텍스트 추출
-        text_content = ""
-        for page in pdf_reader.pages:
-            text_content += page.extract_text() + "\n"
+        # 내용을 9000자 단위로 분할
+        def split_content(text, max_length=9000):
+            chunks = []
+            current_chunk = ""
+            sentences = text.split('. ')
             
-        return text_content
+            for sentence in sentences:
+                if len(current_chunk) + len(sentence) < max_length:
+                    current_chunk += sentence + '. '
+                else:
+                    chunks.append(current_chunk)
+                    current_chunk = sentence + '. '
+            
+            if current_chunk:
+                chunks.append(current_chunk)
+            return chunks
         
+        content_chunks = split_content(content)
+        
+        # 각 청크에 대해 새로운 슬라이드 생성
+        for chunk in content_chunks:
+            content_slide_layout = prs.slide_layouts[1]
+            slide = prs.slides.add_slide(content_slide_layout)
+            
+            # 제목 없이 내용만 추가
+            body_shape = slide.shapes.placeholders[1]
+            text_frame = body_shape.text_frame
+            text_frame.text = chunk
+            
+            # 텍스트 서식 설정
+            for paragraph in text_frame.paragraphs:
+                paragraph.font.size = Pt(12)
+        
+        # 메모리에 저장
+        pptx_io = io.BytesIO()
+        prs.save(pptx_io)
+        pptx_io.seek(0)
+        
+        return pptx_io
+    
     except Exception as e:
-        st.error(f"PDF 처리 중 오류 발생: {str(e)}")
-        return ""
+        st.error(f"프레젠테이션 생성 중 오류 발생: {str(e)}")
+        return None
 
-def create_ppt(slides_content):
-    # Implementation of create_ppt function
-    pass
+def extract_text_from_pdf(pdf_file):
+    try:
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text()
+        return text
+    except Exception as e:
+        st.error(f"PDF 텍스트 추출 중 오류 발생: {str(e)}")
+        return None
 
 def main():
-    st.title("PDF to PPT Converter with Gemini AI")
+    st.title("PDF to PPT 변환기")
     
-    api_key = st.text_input("Google API 키를 입력하세요:", type="password")
+    uploaded_file = st.file_uploader("PDF 파일을 업로드하세요", type=['pdf'])
     
-    if api_key:
-        genai.configure(api_key=api_key)
+    if uploaded_file is not None:
+        # PDF에서 텍스트 추출
+        pdf_text = extract_text_from_pdf(uploaded_file)
         
-        uploaded_file = st.file_uploader("PDF 파일을 업로드하세요", type=['pdf'])
-        
-        if uploaded_file:
-            # 진행 상태 표시
-            with st.spinner('PDF 텍스트를 추출하는 중...'):
-                text_content = pdf_to_text(uploaded_file)
-                st.success('PDF 텍스트 추출 완료!')
-                # 추출된 텍스트 길이 확인
-                st.write(f"추출된 텍스트 길이: {len(text_content)} 문자")
+        if pdf_text:
+            try:
+                # Gemini를 사용하여 내용 요약
+                prompt = f"다음 텍스트를 PPT 형식으로 요약해주세요:\n\n{pdf_text}"
+                response = model.generate_content(prompt)
+                summary = response.text
+                
+                # PPT 생성
+                title = "PDF 요약"
+                pptx_io = create_presentation(title, summary)
+                
+                if pptx_io:
+                    # 다운로드 버튼 생성
+                    st.download_button(
+                        label="PPT 다운로드",
+                        data=pptx_io.getvalue(),
+                        file_name="summary.pptx",
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                    )
             
-            if st.button("PPT 생성하기"):
-                try:
-                    with st.spinner('Gemini AI로 컨텐츠 생성 중...'):
-                        model = genai.GenerativeModel('gemini-pro')
-                        
-                        # 텍스트가 너무 길 경우 분할 처리
-                        if len(text_content) > 10000:
-                            st.warning('텍스트가 너무 깁니다. 처음 10000자만 처리합니다.')
-                            text_content = text_content[:10000]
-                        
-                        prompt = f"""
-                        다음 텍스트를 PPT 슬라이드 형식으로 구조화해주세요:
-                        {text_content}
-                        
-                        각 슬라이드는 제목과 내용을 포함해야 합니다.
-                        결과를 다음과 같은 파이썬 리스트 형식으로 반환해주세요:
-                        [
-                            {{"title": "슬라이드 제목", "content": "슬라이드 내용"}},
-                            {{"title": "다음 슬라이드 제목", "content": "다음 슬라이드 내용"}},
-                        ]
-                        """
-                        
-                        response = model.generate_content(prompt)
-                        st.success('AI 컨텐츠 생성 완료!')
-                        
-                        with st.spinner('PPT 생성 중...'):
-                            slides_content = eval(response.text)
-                            prs = create_ppt(slides_content)
-                            output_file = "output.pptx"
-                            prs.save(output_file)
-                            
-                            with open(output_file, "rb") as file:
-                                st.download_button(
-                                    label="PPT 다운로드",
-                                    data=file,
-                                    file_name="converted_presentation.pptx",
-                                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                                )
-                except Exception as e:
-                    st.error(f"오류가 발생했습니다: {str(e)}")
-                    st.error("응답 내용:")
-                    st.write(response.text)  # 실제 응답 내용 확인
+            except Exception as e:
+                st.error(f"처리 중 오류 발생: {str(e)}")
 
 if __name__ == "__main__":
     main()
